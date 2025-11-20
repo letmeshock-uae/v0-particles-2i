@@ -580,5 +580,11 @@ export default function Home() {
     }
   }, [])
 
-  return <canvas ref={canvasRef} className="w-full h-screen block" style={{ display: "block" }} />
+  return (
+    <canvas
+      ref={canvasRef}
+      className="w-full h-screen block"
+      style={{ width: "100vw", height: "100vh", display: "block" }}
+    />
+  )
 }
