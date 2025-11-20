@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Interactive WebGL particle visualization - Sphere">
+  <title>Particle Sphere - WebGL Visualization</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 100%;
+      height: 100vh;
+      overflow: hidden;
+      background: #0f0f0f;
+    }
+    
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const gl = canvas.getContext('webgl2', { antialias: true });
+    
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Shaders
+    const vertexShader = `#version 300 es
+      in vec3 position;
+      in vec3 color;
+      uniform mat4 projection;
+      uniform mat4 view;
+      uniform mat4 model;
+      out vec3 vColor;
+      
+      void main() {
+        gl_Position = projection * view * model * vec4(position, 1.0);
+        gl_PointSize = 3.0;
+        vColor = color;
+      }
+    `;
+
+    const fragmentShader = `#version 300 es
+      precision highp float;
+      in vec3 vColor;
+      out vec4 outColor;
+      
+      void main() {
+        outColor = vec4(vColor, 0.8);
+      }
+    `;
+
+    // Compile shader
+    function compileShader(source, type) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        return null;
+      }
+      return shader;
+    }
+
+    // Create program
+    const vShader = compileShader(vertexShader, gl.VERTEX_SHADER);
+    const fShader = compileShader(fragmentShader, gl.FRAGMENT_SHADER);
+    const program = gl.createProgram();
+    gl.attachShader(program, vShader);
+    gl.attachShader(program, fShader);
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    // Generate sphere particles
+    const particleCount = 1500;
+    const positions = [];
+    const colors = [];
+
+    const phi = Math.PI * (3 - Math.sqrt(5));
+    const radius = 3;
+
+    for (let i = 0; i < particleCount; i++) {
+      const y = 1 - (i / (particleCount - 1)) * 2;
+      const radiusAtY = Math.sqrt(1 - y * y);
+      const theta = phi * i;
+
+      const x = Math.cos(theta) * radiusAtY * radius;
+      const z = Math.sin(theta) * radiusAtY * radius;
+      const yScaled = y * radius;
+
+      positions.push(x, yScaled, z);
+
+      if (Math.random() < 0.2) {
+        colors.push(1, 0.94, 0); // Yellow
+      } else {
+        colors.push(0.9, 0.95, 1); // White/blue
+      }
+    }
+
+    // Create buffers
+    const posBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+    const posLocation = gl.getAttribLocation(program, 'position');
+    gl.enableVertexAttribArray(posLocation);
+    gl.vertexAttribPointer(posLocation, 3, gl.FLOAT, false, 0, 0);
+
+    const colorBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+    const colorLocation = gl.getAttribLocation(program, 'color');
+    gl.enableVertexAttribArray(colorLocation);
+    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+
+    // Matrix functions
+    function perspective(out, fovy, aspect, near, far) {
+      const f = 1.0 / Math.tan(fovy / 2);
+      const nf = 1 / (near - far);
+      
+      out[0] = f / aspect;
+      out[5] = f;
+      out[10] = (far + near) * nf;
+      out[11] = -1;
+      out[14] = 2 * far * near * nf;
+      return out;
+    }
+
+    function identity(out) {
+      for (let i = 0; i < 16; i++) out[i] = i % 5 === 0 ? 1 : 0;
+      return out;
+    }
+
+    function translate(out, v) {
+      out[12] = v[0];
+      out[13] = v[1];
+      out[14] = v[2];
+      return out;
+    }
+
+    function rotateY(out, angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      out[0] = c;
+      out[2] = s;
+      out[8] = -s;
+      out[10] = c;
+      return out;
+    }
+
+    function rotateX(out, angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      out[5] = c;
+      out[6] = -s;
+      out[9] = s;
+      out[10] = c;
+      return out;
+    }
+
+    gl.clearColor(0.06, 0.06, 0.06, 1.0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    let time = 0;
+    const animate = () => {
+      requestAnimationFrame(animate);
+      time += 0.0001;
+
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      const projMatrix = new Float32Array(16);
+      perspective(projMatrix, Math.PI / 4, canvas.width / canvas.height, 0.1, 100);
+
+      const viewMatrix = new Float32Array(16);
+      identity(viewMatrix);
+      translate(viewMatrix, [0, 0, -8]);
+
+      const modelMatrix = new Float32Array(16);
+      identity(modelMatrix);
+      rotateY(modelMatrix, time * 2);
+      rotateX(modelMatrix, time);
+
+      const projLoc = gl.getUniformLocation(program, 'projection');
+      const viewLoc = gl.getUniformLocation(program, 'view');
+      const modelLoc = gl.getUniformLocation(program, 'model');
+
+      gl.uniformMatrix4fv(projLoc, false, projMatrix);
+      gl.uniformMatrix4fv(viewLoc, false, viewMatrix);
+      gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
+
+      gl.drawArrays(gl.POINTS, 0, particleCount);
+    };
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    });
+  </script>
+</body>
+</html>
