@@ -1,6 +1,12 @@
 "use client"
 import { useEffect, useRef } from "react"
 
+type ResampleBias = {
+  verticalBoost: number
+  horizontalSuppression: number
+  jitter: number
+}
+
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const stateRef = useRef({
@@ -16,8 +22,8 @@ export default function Home() {
     isMorphing: false,
     isPaused: false,
     pauseTimer: 0,
-    particleCount: 2500,
-    activeParticleCount: 2500,
+    particleCount: 5000,
+    activeParticleCount: 5000,
     currentPhase: 0,
     spherePositions: [] as number[],
     kingdomPositions: [] as number[],
@@ -67,6 +73,32 @@ export default function Home() {
       }
     `
 
+      const buildSpherePointCloud = (count: number, radius = 2.5) => {
+        const positions: number[] = []
+        const colors: number[] = []
+        const phi = Math.PI * (3 - Math.sqrt(5))
+
+        for (let i = 0; i < count; i++) {
+          const y = 1 - (i / Math.max(1, count - 1)) * 2
+          const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y))
+          const theta = phi * i
+
+          const x = Math.cos(theta) * radiusAtY * radius
+          const z = Math.sin(theta) * radiusAtY * radius
+          const yScaled = y * radius
+
+          positions.push(x, yScaled, z)
+
+          if (Math.random() < 0.2) {
+            colors.push(0.95, 0.88, 0.1)
+          } else {
+            colors.push(0.85, 0.9, 1.0)
+          }
+        }
+
+        return { positions, colors }
+      }
+
     function compileShader(source: string, type: number): WebGLShader | null {
       const shader = glContext?.createShader(type)
       if (!shader) return null
@@ -95,40 +127,14 @@ export default function Home() {
       return
     }
 
-    const maxParticleCount = state.particleCount * 16
-
-    const positions: number[] = []
-    const colors: number[] = []
-
-    const phi = Math.PI * (3 - Math.sqrt(5))
-    const radius = 2.5
-
-    for (let i = 0; i < state.particleCount; i++) {
-      const y = 1 - (i / (state.particleCount - 1)) * 2
-      const radiusAtY = Math.sqrt(1 - y * y)
-      const theta = phi * i
-
-      const x = Math.cos(theta) * radiusAtY * radius
-      const z = Math.sin(theta) * radiusAtY * radius
-      const yScaled = y * radius
-
-      positions.push(x, yScaled, z)
-
-      if (Math.random() < 0.2) {
-        colors.push(0.95, 0.88, 0.1)
-      } else {
-        colors.push(0.85, 0.9, 1.0)
-      }
-    }
-
-    while (positions.length < maxParticleCount * 3) {
-      positions.push(0, 0, 0)
-      colors.push(0.85, 0.9, 1.0)
-    }
+    const { positions: spherePositions, colors } = buildSpherePointCloud(state.particleCount)
+    state.positions = [...spherePositions]
+    state.spherePositions = [...spherePositions]
+    state.activeParticleCount = state.particleCount
 
     const posBuffer = glContext.createBuffer()
     glContext.bindBuffer(glContext.ARRAY_BUFFER, posBuffer)
-    glContext.bufferData(glContext.ARRAY_BUFFER, new Float32Array(positions), glContext.DYNAMIC_DRAW)
+    glContext.bufferData(glContext.ARRAY_BUFFER, new Float32Array(state.positions), glContext.DYNAMIC_DRAW)
     state.posBuffer = posBuffer
 
     const colorBuffer = glContext.createBuffer()
@@ -225,11 +231,11 @@ export default function Home() {
     glContext.uniformMatrix4fv(state.viewLoc, false, viewMatrix)
     state.modelLoc = glContext.getUniformLocation(state.program, "model")
 
-    state.positions = positions
-    state.spherePositions = [...positions]
-
     const loadGLBModel = async (modelPath: string): Promise<number[] | null> => {
       const maxRetries = 3
+      const bias: ResampleBias = modelPath.includes("kingdomcentre")
+        ? { verticalBoost: 2.2, horizontalSuppression: 0.85, jitter: 0.022 }
+        : { verticalBoost: 1.2, horizontalSuppression: 0.45, jitter: 0.016 }
       let lastError: any = null
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -325,7 +331,7 @@ export default function Home() {
               positionsArray.push(x, y, z)
             }
 
-            return scaleAndMapPositions(positionsArray, count)
+              return scaleAndMapPositions(positionsArray, bias)
           }
 
           console.log("[v0] No Draco compression, extracting real geometry!")
@@ -356,7 +362,7 @@ export default function Home() {
           }
 
           console.log("[v0] Successfully extracted real geometry!")
-          return scaleAndMapPositions(positionsArray, count)
+            return scaleAndMapPositions(positionsArray, bias)
         } catch (error) {
           lastError = error
           console.error(`[v0] GLB loading error (attempt ${attempt + 1}):`, error)
@@ -371,79 +377,139 @@ export default function Home() {
       return null
     }
 
-    const scaleAndMapPositions = (positionsArray: number[], count: number): number[] => {
-      let minX = Number.POSITIVE_INFINITY,
-        maxX = Number.NEGATIVE_INFINITY
-      let minY = Number.POSITIVE_INFINITY,
-        maxY = Number.NEGATIVE_INFINITY
-      let minZ = Number.POSITIVE_INFINITY,
-        maxZ = Number.NEGATIVE_INFINITY
+      const buildSurfaceWeights = (scaledPositions: number[], bias: ResampleBias): number[] => {
+        const weights: number[] = []
+        const verticalThreshold = 0.35
+        const horizontalThreshold = 0.78
 
-      for (let i = 0; i < positionsArray.length; i += 3) {
-        minX = Math.min(minX, positionsArray[i])
-        maxX = Math.max(maxX, positionsArray[i])
-        minY = Math.min(minY, positionsArray[i + 1])
-        maxY = Math.max(maxY, positionsArray[i + 1])
-        minZ = Math.min(minZ, positionsArray[i + 2])
-        maxZ = Math.max(maxZ, positionsArray[i + 2])
-      }
+        for (let i = 0; i < scaledPositions.length; i += 3) {
+          const x = scaledPositions[i]
+          const y = scaledPositions[i + 1]
+          const z = scaledPositions[i + 2]
+          const length = Math.max(Math.hypot(x, y, z), 1e-4)
+          const dirY = Math.abs(y / length)
 
-      const centerX = (minX + maxX) / 2
-      const centerY = (minY + maxY) / 2
-      const centerZ = (minZ + maxZ) / 2
-      const scaleX = maxX - minX
-      const scaleY = maxY - minY
-      const scaleZ = maxZ - minZ
-      const maxScale = Math.max(scaleX, scaleY, scaleZ)
-      const targetScale = 4.0
+          let weight = 1
+          if (dirY < verticalThreshold) {
+            const proximity = (verticalThreshold - dirY) / verticalThreshold
+            weight *= 1 + proximity * bias.verticalBoost
+          } else if (dirY > horizontalThreshold) {
+            const intensity = Math.min(1, (dirY - horizontalThreshold) / (1 - horizontalThreshold))
+            weight *= Math.max(0.08, 1 - intensity * bias.horizontalSuppression)
+          }
 
-      const scaledPositions: number[] = []
-      for (let i = 0; i < positionsArray.length; i += 3) {
-        scaledPositions.push(
-          ((positionsArray[i] - centerX) / maxScale) * targetScale,
-          ((positionsArray[i + 1] - centerY) / maxScale) * targetScale,
-          ((positionsArray[i + 2] - centerZ) / maxScale) * targetScale,
-        )
-      }
-
-      const mappedPositions: number[] = []
-      const vertexCount = count
-
-      const targetParticleCount = state.particleCount * 16
-
-      if (targetParticleCount >= vertexCount) {
-        for (let i = 0; i < vertexCount; i++) {
-          const idx = i * 3
-          mappedPositions.push(scaledPositions[idx], scaledPositions[idx + 1], scaledPositions[idx + 2])
+          weights.push(weight)
         }
 
-        const remainingParticles = targetParticleCount - vertexCount
-        const step = Math.max(1, Math.floor(vertexCount / remainingParticles))
+        return weights
+      }
 
-        for (let i = 0; i < remainingParticles; i++) {
-          const idx1 = (i * step) % vertexCount
-          const idx2 = (idx1 + 1) % vertexCount
-          const t = 0.5
+      const resampleWithWeights = (
+        scaledPositions: number[],
+        weights: number[],
+        targetCount: number,
+        jitterAmount: number,
+      ): number[] => {
+        if (!scaledPositions.length) {
+          return []
+        }
 
-          const i1 = idx1 * 3
-          const i2 = idx2 * 3
+        const safeWeights = weights.map((w) => (Number.isFinite(w) && w > 0 ? w : 0.0001))
+        if (!safeWeights.length) {
+          return scaledPositions.slice(0, targetCount * 3)
+        }
+
+        let totalWeight = safeWeights.reduce((acc, w) => acc + w, 0)
+        if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+          totalWeight = safeWeights.length
+        }
+
+        const mappedPositions: number[] = []
+        const step = totalWeight / targetCount
+        let pointer = 0
+        let accumulated = safeWeights[0]
+        let target = Math.random() * step
+
+        for (let i = 0; i < targetCount; i++) {
+          while (pointer < safeWeights.length - 1 && target > accumulated) {
+            pointer++
+            accumulated += safeWeights[pointer]
+          }
+
+          const idx = pointer * 3
+          const jitterX = (Math.random() - 0.5) * jitterAmount
+          const jitterY = (Math.random() - 0.5) * jitterAmount * 0.7
+          const jitterZ = (Math.random() - 0.5) * jitterAmount
 
           mappedPositions.push(
-            scaledPositions[i1] * (1 - t) + scaledPositions[i2] * t,
-            scaledPositions[i1 + 1] * (1 - t) + scaledPositions[i2 + 1] * t,
-            scaledPositions[i1 + 2] * (1 - t) + scaledPositions[i2 + 2] * t,
+            scaledPositions[idx] + jitterX,
+            scaledPositions[idx + 1] + jitterY,
+            scaledPositions[idx + 2] + jitterZ,
           )
+
+          target += step
         }
-      } else {
-        for (let i = 0; i < targetParticleCount; i++) {
-          const vertexIdx = Math.floor((i * vertexCount) / targetParticleCount)
-          const idx = vertexIdx * 3
-          mappedPositions.push(scaledPositions[idx], scaledPositions[idx + 1], scaledPositions[idx + 2])
-        }
+
+        return mappedPositions
       }
 
-      return mappedPositions
-    }
+      const scaleAndMapPositions = (positionsArray: number[], bias: ResampleBias): number[] => {
+        if (!positionsArray.length) {
+          return [...state.spherePositions]
+        }
+
+        let minX = Number.POSITIVE_INFINITY,
+          maxX = Number.NEGATIVE_INFINITY
+        let minY = Number.POSITIVE_INFINITY,
+          maxY = Number.NEGATIVE_INFINITY
+        let minZ = Number.POSITIVE_INFINITY,
+          maxZ = Number.NEGATIVE_INFINITY
+
+        for (let i = 0; i < positionsArray.length; i += 3) {
+          minX = Math.min(minX, positionsArray[i])
+          maxX = Math.max(maxX, positionsArray[i])
+          minY = Math.min(minY, positionsArray[i + 1])
+          maxY = Math.max(maxY, positionsArray[i + 1])
+          minZ = Math.min(minZ, positionsArray[i + 2])
+          maxZ = Math.max(maxZ, positionsArray[i + 2])
+        }
+
+        const centerX = (minX + maxX) / 2
+        const centerY = (minY + maxY) / 2
+        const centerZ = (minZ + maxZ) / 2
+        const maxScale = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-4)
+        const targetScale = 4.0
+
+        const scaledPositions: number[] = []
+        for (let i = 0; i < positionsArray.length; i += 3) {
+          scaledPositions.push(
+            ((positionsArray[i] - centerX) / maxScale) * targetScale,
+            ((positionsArray[i + 1] - centerY) / maxScale) * targetScale,
+            ((positionsArray[i + 2] - centerZ) / maxScale) * targetScale,
+          )
+        }
+
+        const weights = buildSurfaceWeights(scaledPositions, bias)
+        const sampled = resampleWithWeights(scaledPositions, weights, state.particleCount, bias.jitter)
+
+        if (!sampled.length) {
+          return [...state.spherePositions]
+        }
+
+        if (sampled.length < state.particleCount * 3) {
+          const fallback = [...sampled]
+          const needed = state.particleCount * 3 - sampled.length
+          const vertexCount = Math.max(1, Math.floor(sampled.length / 3))
+          for (let i = 0; i < needed; i += 3) {
+            const vertexIdx = Math.floor((i / 3) % vertexCount)
+            const base = vertexIdx * 3
+            fallback.push(sampled[base], sampled[base + 1], sampled[base + 2])
+          }
+          return fallback.slice(0, state.particleCount * 3)
+        }
+
+        return sampled.slice(0, state.particleCount * 3)
+      }
 
       const initializeModels = async () => {
         const [kingdom, museum] = await Promise.all([
@@ -489,32 +555,24 @@ export default function Home() {
 
         let fromPositions: number[]
         let toPositions: number[]
-        let startCount: number
-        let endCount: number
 
-          if (state.currentPhase === 0) {
-            fromPositions = state.spherePositions
-            toPositions = state.kingdomPositions
-            startCount = state.particleCount
-            endCount = state.kingdomPositions.length / 3
-          } else if (state.currentPhase === 1) {
-            fromPositions = state.kingdomPositions
-            toPositions = state.museumPositions
-            startCount = state.kingdomPositions.length / 3
-            endCount = state.museumPositions.length / 3
-          } else {
-            fromPositions = state.museumPositions
-            toPositions = state.spherePositions
-            startCount = state.museumPositions.length / 3
-            endCount = state.particleCount
-          }
+        if (state.currentPhase === 0) {
+          fromPositions = state.spherePositions
+          toPositions = state.kingdomPositions
+        } else if (state.currentPhase === 1) {
+          fromPositions = state.kingdomPositions
+          toPositions = state.museumPositions
+        } else {
+          fromPositions = state.museumPositions
+          toPositions = state.spherePositions
+        }
 
-        state.activeParticleCount = Math.floor(startCount * (1 - easedProgress) + endCount * easedProgress)
+        state.activeParticleCount = state.particleCount
 
         for (let i = 0; i < state.activeParticleCount; i++) {
           const idx = i * 3
-          const fromIdx = Math.min(idx, fromPositions.length - 3)
-          const toIdx = Math.min(idx, toPositions.length - 3)
+          const fromIdx = idx % fromPositions.length
+          const toIdx = idx % toPositions.length
 
           state.positions[idx] = fromPositions[fromIdx] * (1 - easedProgress) + toPositions[toIdx] * easedProgress
           state.positions[idx + 1] =
