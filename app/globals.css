@@ -119,7 +119,17 @@
   * {
     @apply border-border outline-ring/50;
   }
+
+  html,
   body {
-    @apply bg-background text-foreground;
+    @apply w-full h-full;
+  }
+
+  body {
+    @apply bg-background text-foreground m-0 overflow-hidden;
+  }
+
+  canvas {
+    @apply block w-screen h-screen;
   }
 }
