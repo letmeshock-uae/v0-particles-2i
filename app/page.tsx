@@ -445,23 +445,33 @@ export default function Home() {
       return mappedPositions
     }
 
-    const initializeModels = async () => {
-      const kingdom = await loadGLBModel("/images/kingdomcentre.glb")
+      const initializeModels = async () => {
+        const [kingdom, museum] = await Promise.all([
+          loadGLBModel("/images/kingdomcentre.glb"),
+          loadGLBModel("/images/museumoffuture.glb"),
+        ])
 
-      if (kingdom) {
-        state.kingdomPositions = kingdom
-        state.museumPositions = kingdom
-        console.log("[v0] Kingdom model loaded:", kingdom.length / 3, "particles")
-        console.log("[v0] Using kingdom for both building phases")
+        if (kingdom) {
+          state.kingdomPositions = kingdom
+          console.log("[v0] Kingdom model loaded:", kingdom.length / 3, "particles")
+        } else {
+          console.error("[v0] Failed to load kingdom model - falling back to sphere geometry")
+          state.kingdomPositions = [...state.spherePositions]
+        }
+
+        if (museum) {
+          state.museumPositions = museum
+          console.log("[v0] Museum model loaded:", museum.length / 3, "particles")
+        } else {
+          console.error("[v0] Failed to load museum model - falling back to sphere geometry")
+          state.museumPositions = [...state.spherePositions]
+        }
 
         setTimeout(() => {
           state.isMorphing = true
-          state.currentPhase = 1
+          state.currentPhase = 0
         }, 1000)
-      } else {
-        console.error("[v0] Failed to load model - animation will only show sphere")
       }
-    }
 
     initializeModels()
 
@@ -482,27 +492,22 @@ export default function Home() {
         let startCount: number
         let endCount: number
 
-        if (state.currentPhase === 1) {
-          fromPositions = state.spherePositions
-          toPositions = state.kingdomPositions
-          startCount = state.particleCount
-          endCount = state.kingdomPositions.length / 3
-        } else if (state.currentPhase === 2) {
-          fromPositions = state.kingdomPositions
-          toPositions = state.spherePositions
-          startCount = state.kingdomPositions.length / 3
-          endCount = state.particleCount
-        } else if (state.currentPhase === 3) {
-          fromPositions = state.spherePositions
-          toPositions = state.museumPositions
-          startCount = state.particleCount
-          endCount = state.museumPositions.length / 3
-        } else {
-          fromPositions = state.museumPositions
-          toPositions = state.spherePositions
-          startCount = state.museumPositions.length / 3
-          endCount = state.particleCount
-        }
+          if (state.currentPhase === 0) {
+            fromPositions = state.spherePositions
+            toPositions = state.kingdomPositions
+            startCount = state.particleCount
+            endCount = state.kingdomPositions.length / 3
+          } else if (state.currentPhase === 1) {
+            fromPositions = state.kingdomPositions
+            toPositions = state.museumPositions
+            startCount = state.kingdomPositions.length / 3
+            endCount = state.museumPositions.length / 3
+          } else {
+            fromPositions = state.museumPositions
+            toPositions = state.spherePositions
+            startCount = state.museumPositions.length / 3
+            endCount = state.particleCount
+          }
 
         state.activeParticleCount = Math.floor(startCount * (1 - easedProgress) + endCount * easedProgress)
 
@@ -535,7 +540,7 @@ export default function Home() {
         if (state.pauseTimer >= 0.2) {
           state.isPaused = false
 
-          state.currentPhase = (state.currentPhase + 1) % 4
+            state.currentPhase = (state.currentPhase + 1) % 3
 
           state.isMorphing = true
         }
